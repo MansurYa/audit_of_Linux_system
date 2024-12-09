@@ -1,0 +1,5 @@
+matplotlib==3.1.2
+psutil==5.7.0
+pyinotify==0.9.6
+python-ptrace==0.9.7
+PyGObject==3.36.0

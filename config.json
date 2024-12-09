@@ -1,0 +1,11 @@
+{
+    "db_path": "event_log.db",
+    "log_rotation_days": 7,
+    "monitor_paths": ["/var/log", "/etc"],
+    "email_notifications": false,
+    "email_recipients": ["admin@example.com"],
+    "smtp_server": "smtp.example.com",
+    "smtp_port": 587,
+    "smtp_user": "",
+    "smtp_password": ""
+}
