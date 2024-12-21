@@ -127,12 +127,18 @@ class AuditApp(tk.Tk):
         event_types = list(data.keys())
         counts = list(data.values())
 
-        fig, ax = plt.subplots()
+        # Увеличиваем размер графика
+        fig, ax = plt.subplots(figsize=(8, 6))  # Размеры графика увеличены для видимости
         ax.bar(event_types, counts)
         ax.set_xlabel('Тип события')
         ax.set_ylabel('Количество')
         ax.set_title('Статистика событий')
+
+        # Поворачиваем подписи на оси X
         ax.tick_params(axis='x', rotation=45)
+
+        # Увеличиваем отступы
+        plt.tight_layout()  # Автоматическая корректировка отступов
 
         # Отображение графика в Tkinter
         top = tk.Toplevel(self)

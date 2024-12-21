@@ -2,10 +2,10 @@
     "db_path": "event_log.db",
     "log_rotation_days": 7,
     "monitor_paths": ["/var/log", "/etc"],
-    "email_notifications": false,
-    "email_recipients": ["admin@example.com"],
-    "smtp_server": "smtp.example.com",
+    "email_notifications": true,
+    "email_recipients": ["recipient1@example.com", "recipient2@example.com"],
+    "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
-    "smtp_user": "",
-    "smtp_password": ""
+    "smtp_user": "your_email@gmail.com",
+    "smtp_password": "your_app_password"
 }

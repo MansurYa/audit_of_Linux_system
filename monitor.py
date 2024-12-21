@@ -9,6 +9,8 @@ from logger import log_event
 from config import config
 import pwd
 from notifier import send_email_notification
+from concurrent.futures import ThreadPoolExecutor
+
 
 
 class ProcessMonitor:
@@ -16,32 +18,39 @@ class ProcessMonitor:
         """
         Инициализация монитора процессов.
         """
-        self.existing_pids = set()
+        self.existing_pids = set()  # Набор текущих PID
+        self.process_cache = {}  # Кэш для хранения информации о процессах
+        self.lock = threading.Lock()  # Блокировка для синхронизации доступа к кэшу
+        self.executor = ThreadPoolExecutor(max_workers=10)  # Пул потоков для запуска задач
 
     def start_monitoring(self):
         """
-        Начинает мониторинг запуска и завершения процессов с использованием `ptrace`.
+        Начинает мониторинг запуска и завершения процессов.
         """
         while True:
-            current_pids = set(psutil.pids())
-            new_pids = current_pids - self.existing_pids
-            terminated_pids = self.existing_pids - current_pids
+            current_pids = set(psutil.pids())  # Получение текущих PID
+            new_pids = current_pids - self.existing_pids  # Новые процессы
+            terminated_pids = self.existing_pids - current_pids  # Завершённые процессы
 
+            # Отслеживаем новые процессы
             for pid in new_pids:
-                threading.Thread(target=self.trace_process, args=(pid,), daemon=True).start()
+                self.executor.submit(self.trace_process, pid)  # Используем пул потоков
 
+            # Обрабатываем завершённые процессы
             for pid in terminated_pids:
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                event_type = 'Process Ended'
-                description = f'Process (PID: {pid}) ended.'
-                log_event(timestamp, 'Unknown', pid, event_type, description)
+                self.handle_terminated_process(pid)
 
+            # Обновляем список существующих PID
             self.existing_pids = current_pids
+
+            # Очищаем кэш от неактуальных данных
+            self.cleanup_cache()
+
             time.sleep(1)
 
     def trace_process(self, pid):
         """
-        Использует ptrace для отслеживания процесса.
+        Отслеживает процесс.
 
         :param pid: int: PID процесса для отслеживания.
         """
@@ -52,14 +61,57 @@ class ProcessMonitor:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             event_type = 'Process Started'
             description = f'Process {cmdline} (PID: {pid}) started by {user}'
+
+            # Логируем событие
             log_event(timestamp, user, pid, event_type, description)
 
-            # Отправка уведомления по электронной почте
+            # Сохраняем данные в кэш с блокировкой
+            with self.lock:
+                self.process_cache[pid] = {'user': user, 'cmdline': cmdline}
+
+            # Отправка уведомления
             subject = f"Process Started: {cmdline}"
             body = f"Process {cmdline} (PID: {pid}) started by {user} at {timestamp}."
             send_email_notification(subject, body)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return
+            # Если процесс уже завершён или недоступен, пропускаем
+            pass
+
+    def handle_terminated_process(self, pid):
+        """
+        Обрабатывает завершённый процесс.
+
+        :param pid: int: PID завершённого процесса.
+        """
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        event_type = 'Process Ended'
+
+        # Извлекаем данные из кэша с блокировкой
+        with self.lock:
+            cached_data = self.process_cache.pop(pid, None)
+
+        if cached_data:
+            user = cached_data['user']
+            cmdline = cached_data['cmdline']
+            description = f'Process {cmdline} (PID: {pid}) ended.'
+        else:
+            user = 'Unknown'
+            description = f'Process (PID: {pid}) ended.'
+
+        # Логируем событие
+        log_event(timestamp, user, pid, event_type, description)
+
+    def cleanup_cache(self):
+        """
+        Удаляет из кэша неактуальные данные.
+        """
+        current_pids = set(psutil.pids())
+
+        with self.lock:
+            # Удаляем из кэша процессы, которые больше не существуют
+            for pid in list(self.process_cache.keys()):  # Создаём копию ключей для безопасной итерации
+                if pid not in current_pids:
+                    del self.process_cache[pid]
 
 
 class FileMonitor(pyinotify.ProcessEvent):
@@ -129,7 +181,7 @@ class NetworkMonitor:
         """
         Инициализация монитора сети.
         """
-        self.existing_connections = set()
+        self.existing_connections = {}
 
     def start_monitoring(self):
         """
@@ -137,14 +189,41 @@ class NetworkMonitor:
         """
         while True:
             connections = psutil.net_connections(kind='inet')
-            current_connections = set((conn.laddr, conn.raddr, conn.status) for conn in connections if conn.raddr)
-            new_connections = current_connections - self.existing_connections
+            current_connections = {
+                (conn.laddr, conn.raddr): {'status': conn.status, 'pid': conn.pid}
+                for conn in connections if conn.raddr
+            }
+            new_connections = current_connections.keys() - self.existing_connections.keys()
+            terminated_connections = self.existing_connections.keys() - current_connections.keys()
 
+            # Обрабатываем новые соединения
             for conn in new_connections:
+                conn_data = current_connections[conn]
+                pid = conn_data['pid']
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 event_type = 'Network Connection'
-                description = f'{conn[0]} -> {conn[1]} (Status: {conn[2]})'
-                log_event(timestamp, 'system', None, event_type, description)
 
+                # Получаем информацию о процессе
+                try:
+                    proc = psutil.Process(pid)
+                    user = proc.username()
+                    cmdline = ' '.join(proc.cmdline())
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return
+
+                description = f'{conn[0]} -> {conn[1]} (Status: {conn_data["status"]}, PID: {pid}, User: {user}, Command: {cmdline})'
+                log_event(timestamp, user, pid, event_type, description)
+
+            # Обрабатываем завершённые соединения
+            for conn in terminated_connections:
+                conn_data = self.existing_connections[conn]
+                pid = conn_data['pid']
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                event_type = 'Connection Terminated'
+
+                description = f'{conn[0]} -> {conn[1]} (Status: {conn_data["status"]}, PID: {pid})'
+                log_event(timestamp, 'system', pid, event_type, description)
+
+            # Обновляем список существующих соединений
             self.existing_connections = current_connections
             time.sleep(1)
